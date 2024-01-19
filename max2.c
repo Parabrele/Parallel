@@ -27,10 +27,9 @@ int *generate_array(int seed, int size)
     This function generate an array based on the seed and the size.
     */
     int i;
-    int array[size];
+    int *array;
 
-    if (seed > -1)
-        srand48(seed);
+    if (seed > -1) srand48(seed);
 
     array = (int *)malloc(size * sizeof(int));
 
@@ -90,21 +89,16 @@ int worker_v0(int seed, int N, int rank, int nb_proc)
     Only the master process will generate the array and send it to the other processes.
     */
     int max;
+    int *array;
 
     if (rank == 0)
     {
         float t1 = MPI_Wtime();
-        int array[N];
         array = generate_array(seed, N);
         for (int i = 1; i < nb_proc; i++)
         {
-            //remark : I should only send a portion of the array, but anyway this is not the bottleneck.
-            //          Following the remark at the beginning of the file, this would become the bottleneck
-            //          should we not have to generate the array. But anyway this would still be slower than
-            //          not parallelising since one process would send the array and doing so is already slower
-            //          than computing the max.
             MPI_Send(
-                array + N / nb_proc * i,
+                array + N / nb_proc * i, // pointer to the first element of the portion of the array to be sent
                 N/nb_proc,
                 MPI_INT, i, 0, MPI_COMM_WORLD
             );
@@ -120,7 +114,7 @@ int worker_v0(int seed, int N, int rank, int nb_proc)
     }
     else
     {
-        int array[N / nb_proc];
+        array = (int *)malloc(N / nb_proc * sizeof(int));
         MPI_Recv(array, N / nb_proc, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         float t3 = MPI_Wtime();
         max = max_array(array, N / nb_proc, 0);
@@ -140,7 +134,7 @@ int worker_v1(int seed, int N, int rank, int nb_proc)
     This worker generates the whole array instead of receiving it as argument to avoid large communications and compare the performance.
     */
     int max;
-    int array[N];
+    int *array;
 
     float t1 = MPI_Wtime();
     array = generate_array(seed, N);
