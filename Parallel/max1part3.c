@@ -19,6 +19,9 @@ This application will first generate M arrays of N elements each based on the se
 
 //This is the sequential version of the program, used as a reference
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <mpi.h>
 
 int *generate_array(int seed, int size)
 {
@@ -66,7 +69,7 @@ int max_array(int *array, int size, int offset)
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
-    float t1 = MPI_Wtime();
+    float t0 = MPI_Wtime();
 
     int N;
     int M;
@@ -75,31 +78,34 @@ int main(int argc, char **argv)
     
     if (argc != 4)
     {
-        fprintf(stderr, "Function needs 3 arguments: seed and number of elements\n");
+        fprintf(stderr, "Function needs 3 arguments: seed, number of elements and number of arrays\n");
         exit(1);
     }
     
     seed = atoi(argv[1]);
     N = atoi(argv[2]);
     M = atoi(argv[3]);
-
-    int array[M][N];
     
+    int *array[M];
+
+    srand48(seed);
     for (int i = 0; i < M; i++)
     {
-        array[i] = generate_array(seed, N);
+        array[i] = generate_array(-1, N);
     }
+    float t1 = MPI_Wtime();
+    printf("Time to generate arrays: %f ms\n", (t1 - t0) * 1000);
     
     for (int i = 0; i < M; i++)
     {
         max = max_array(array[i], N, 0);
         printf("Maximum value of array %d: %d\n", i, max);
 
-        free(array[i])
+        free(array[i]);
     }
     
     float t2 = MPI_Wtime();
-    printf("Time: %f ms\n", (t2 - t1) * 1000);
+    printf("Time to compute max: %f ms\n", (t2 - t1) * 1000);
     MPI_Finalize();
     return 0;
 }

@@ -1,9 +1,16 @@
 /*
+Note :
+
+max3.c is essentially the same as max2.c but much cleaner.
+I print a lot of stuff here to measure all possibly interesting times.
+
 RESULTS :
 
 Implementation 1 :
 one worker generates the array, then sends it to every other worker and they compute the max value on their portion of the array.
-This is slower than the max1 implementation because there is still one guy generating the array, and now he does other stuff too.
+This is a bit slower than the max1 implementation because there is still one guy generating the array, and now he does other stuff too.
+Computing the max is small compared to generating and sending the array. It is somewhat equal than just sending it so even if
+we take generation out of the equation, it is still not faster than max1.
 
 Implementation 2 :
 every worker generates the array and computes the max on its portion.
@@ -13,14 +20,14 @@ This is exactly as fast as max1 because the bottleneck is not computing the max,
 If we look only at the time taken to compute the max, implementation 2 is faster than max1.
 However, it relies on the fact that every one is able to recompute the array.
 In a real application, the array is not computable and must be sent so only implementation 1 is interesting.
-Since sending is still slower than computing the max, it would still be better not to parallelise anything.
+In the case of a simple operation like max there is no gain in doing that.
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
 
-int *generate_array(int seed, int size, int stride, int offset)
+int *generate_array(int seed, int size)
 {
     // TODO : use stride and offset to generate a non contiguous array
     /*
@@ -29,11 +36,11 @@ int *generate_array(int seed, int size, int stride, int offset)
     int i;
     int *array;
 
-    if (seed > -1)
-        srand48(seed);
+    if (seed > -1) srand48(seed);
 
     array = (int *)malloc(size * sizeof(int));
 
+    // Wtf this loop is taking non deterministic time, varying from 1ms to 6ms :o (for 100000 elements)
     for (i = 0; i < size; i++)
     {
         array[i] = lrand48();
@@ -42,7 +49,7 @@ int *generate_array(int seed, int size, int stride, int offset)
     return array;
 }
 
-int max_array(int *array, int size, int stride, int offset)
+int max_array(int *array, int size, int offset)
 {
     /*
     This function returns the maximum value inside an array.
@@ -51,7 +58,7 @@ int max_array(int *array, int size, int stride, int offset)
     int max;
 
     max = array[offset];
-    for (i = offset + stride; i < size; i += stride)
+    for (i = offset + 1; i < size; i += 1)
     {
         if (array[i] > max)
         {
@@ -83,35 +90,47 @@ int fuse_max(int max, int rank, int nb_proc)
     return max;
 }
 
-int worker_v0(int seed, int N, int rank, int nb_proc, int *array)
+int worker_v0(int seed, int N, int rank, int nb_proc)
 {
     /*
     This worker computes the maximum value inside a portion of the array based on the rank of the process.
     Only the master process will generate the array and send it to the other processes.
     */
     int max;
+    int *array;
 
     if (rank == 0)
     {
-        array = generate_array(seed, N, 1, 0);
+        float t1 = MPI_Wtime();
+        array = generate_array(seed, N);
+        float t2 = MPI_Wtime();
+        printf("%d Time to generate array: %f ms\n", rank, (t2 - t1) * 1000);
+        float t3 = MPI_Wtime();
         for (int i = 1; i < nb_proc; i++)
         {
-            //remark : I should only send a portion of the array, but anyway this is not the bottleneck.
-            //          Following the remark at the beginning of the file, this would become the bottleneck
-            //          should we not have to generate the array. But anyway this would still be slower than
-            //          not parallelising since one process would send the array and doing so is already slower
-            //          than computing the max.
-            MPI_Send(array, N, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(
+                array + N / nb_proc * i, // pointer to the first element of the portion of the array to be sent
+                N/nb_proc,
+                MPI_INT, i, 0, MPI_COMM_WORLD
+            );
         }
+        float t4 = MPI_Wtime();
+        printf("%d Time to distribute array: %f ms\n", rank, (t4 - t3) * 1000);
 
-        max = max_array(array, N / nb_proc * (rank + 1), 1, N / nb_proc * rank);
+        float t5 = MPI_Wtime();
+        max = max_array(array, N / nb_proc, 0);
+        float t6 = MPI_Wtime();
+        printf("%d Time to compute max: %f ms\n", rank, (t6 - t5) * 1000);
         free(array);
     }
     else
     {
-        array = (int *)malloc(N * sizeof(int));
-        MPI_Recv(array, N, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        max = max_array(array, N / nb_proc * (rank + 1), 1, N / nb_proc * rank);
+        array = (int *)malloc(N / nb_proc * sizeof(int));
+        MPI_Recv(array, N / nb_proc, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        float t3 = MPI_Wtime();
+        max = max_array(array, N / nb_proc, 0);
+        float t4 = MPI_Wtime();
+        printf("%d Time to compute max: %f ms\n", rank, (t4 - t3) * 1000);
         free(array);
     }
 
@@ -120,19 +139,20 @@ int worker_v0(int seed, int N, int rank, int nb_proc, int *array)
     return max;
 }
 
-int worker_v1(int seed, int N, int rank, int nb_proc, int *array)
+int worker_v1(int seed, int N, int rank, int nb_proc)
 {
     /*
     This worker generates the whole array instead of receiving it as argument to avoid large communications and compare the performance.
     */
     int max;
+    int *array;
 
     float t1 = MPI_Wtime();
-    array = generate_array(seed, N, 1, 0);
+    array = generate_array(seed, N);
     float t2 = MPI_Wtime();
     printf("%d Time to generate array: %f ms\n", rank, (t2 - t1) * 1000);
     float t3 = MPI_Wtime();
-    max = max_array(array, N / nb_proc * (rank + 1), 1, N / nb_proc * rank);
+    max = max_array(array, N / nb_proc * (rank + 1), N / nb_proc * rank);
     float t4 = MPI_Wtime();
     printf("%d Time to compute max: %f ms\n", rank, (t4 - t3) * 1000);
     free(array);
@@ -144,13 +164,12 @@ int worker_v1(int seed, int N, int rank, int nb_proc, int *array)
 
 int main(int argc, char **argv)
 {
-    int N, stride, offset;
-    int *array;
+    int N;
     int max;
     int seed;
     float t1, t2;
 
-    int TEST_VERSION = 1;
+    int TEST_VERSION = 0;
 
     if (argc != 3)
     {
@@ -177,11 +196,11 @@ int main(int argc, char **argv)
 
     if (TEST_VERSION == 0)
     {
-        max = worker_v0(seed, N, rank, nb_proc, array);
+        max = worker_v0(seed, N, rank, nb_proc);
     }
     else if (TEST_VERSION == 1)
     {
-        max = worker_v1(seed, N, rank, nb_proc, array);
+        max = worker_v1(seed, N, rank, nb_proc);
         //} else if (TEST_VERSION == 2)
         //{
         //    max = worker_v2(seed, N, rank, nb_proc, array);
@@ -191,7 +210,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Wrong version number\n");
         exit(1);
     }
-
 
     t2 = MPI_Wtime();
 

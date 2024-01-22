@@ -20,9 +20,9 @@ To evaluate the performance of the program, we need to measure its execution tim
 //This is the sequential version of the program, used as a reference
 
 
-int *generate_array(int seed, int size, int stride, int offset)
+int *generate_array(int seed, int size)
 {
-    //TODO : use stride and offset to generate a non contiguous array
+    //TODO : use stride and offset to generate a non contiguous array and test the performance
     /*
     This function generate an array based on the seed and the size.
     */
@@ -42,7 +42,7 @@ int *generate_array(int seed, int size, int stride, int offset)
     return array;
 }
 
-int max_array(int *array, int size, int stride, int offset)
+int max_array(int *array, int size, int offset)
 {
     /*
     This function returns the maximum value inside an array.
@@ -51,7 +51,7 @@ int max_array(int *array, int size, int stride, int offset)
     int max;
 
     max = array[offset];
-    for (i = offset + stride; i < size; i += stride)
+    for (i = offset + 1; i < size; i += 1)
     {
         if (array[i] > max)
         {
@@ -65,7 +65,7 @@ int max_array(int *array, int size, int stride, int offset)
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
-    float t1 = MPI_Wtime();
+    float t0 = MPI_Wtime();
 
     int N;
     int *array;
@@ -81,16 +81,19 @@ int main(int argc, char **argv)
     seed = atoi(argv[1]);
     N = atoi(argv[2]);
     
-    array = generate_array(seed, N, 1, 0);
+    array = generate_array(seed, N);
     
-    max = max_array(array, N, 1, 0);
+    float t1 = MPI_Wtime();
+    printf("Time to generate the array : %f ms\n", (t1 - t0) * 1000);
+    
+    max = max_array(array, N, 0);
     
     printf("Maximum value: %d\n", max);
     
     free(array);
     
     float t2 = MPI_Wtime();
-    printf("Time: %f ms\n", (t2 - t1) * 1000);
+    printf("Time to compute the max : %f ms\n", (t2 - t1) * 1000);
     MPI_Finalize();
     return 0;
-    }
+}
