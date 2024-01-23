@@ -68,6 +68,29 @@ int max_array(int *array, int size, int offset)
     return max;
 }
 
+/*
+There are two versions of this file.
+
+v1 implements the static distribution of the work by the following steps:
+
+master distribute all arrays to their respective slave
+only then do the slave start to work
+master collect the results from the slaves
+
+v2 implements the dynamic distribution of the work by the following steps:
+
+master distribute arrays to the slaves cyclically. When a cycle is complete, the master waits for the results.
+upon receiving an array, the slave starts to work and sends the result back to the master.
+
+Hopefully, v2 is faster than v1, as there will be less idle time for the slaves.
+*/
+
+/*
+This is the v2 version.
+
+This version is approximately twice as fast as v1 if you disregard the time to generate the arrays.
+*/
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -93,7 +116,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
     
     if (rank==0)
-    { 
+    {
         // generate the arrays
         float t1 = MPI_Wtime();
         srand48(seed);
@@ -102,67 +125,54 @@ int main(int argc, char **argv)
             array[i] = generate_array(-1, N);
         }
         float t2 = MPI_Wtime();
-        printf("Time to generate the arrays: %f ms\n", (t2 - t1) * 1000);
 
-        // distribute the work
         float t3 = MPI_Wtime();
-        for (int arr = 0; arr < M; arr++)
+        int nb_rounds = M / (nb_proc - 1);
+        int incomplete_round = (M % (nb_proc - 1) != 0);
+        for (int round = 0; round < nb_rounds + incomplete_round; round++)
         {
-            MPI_Send(
-                array[arr],
-                N,
-                MPI_INT,
-                (arr % (nb_proc - 1)) + 1,
-                arr,
-                MPI_COMM_WORLD
-            );
-        }
-        float t4 = MPI_Wtime();
-        printf("Time to distribute the arrays: %f ms\n", (t4 - t3) * 1000);
-
-        // do its part of the work
-        float t5 = MPI_Wtime();
-        for (int arr = 0; arr < M; arr++)
-        {
-            max[arr] = max_array(array[arr], N, 0);
-            free(array[arr]);
-        }
-        float t6 = MPI_Wtime();
-        printf("Time to compute the max: %f ms\n", (t6 - t5) * 1000);
-
-        // collect the results
-        float t7 = MPI_Wtime();
-        for (int arr = 0; arr < M; arr++)
-        {
-            int tmp;
-            MPI_Recv(&tmp, 1, MPI_INT, (arr % (nb_proc - 1)) + 1, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (tmp > max[arr])
+            for (int proc = 1; proc < nb_proc; proc++)
             {
-                max[arr] = tmp;
+                int arr = round * (nb_proc - 1) + proc - 1;
+                if (arr < M)
+                {
+                    MPI_Send(array[arr], N, MPI_INT, proc, arr, MPI_COMM_WORLD);
+                    free(array[arr]);
+                }
+            }
+
+            for (int proc = 1; proc < nb_proc; proc++)
+            {
+                int arr = round * (nb_proc - 1) + proc - 1;
+                if (arr < M)
+                {
+                    MPI_Recv(&max[arr], 1, MPI_INT, proc, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                }
             }
         }
-        float t8 = MPI_Wtime();
+
+        float t4 = MPI_Wtime();
 
         // print the results
         for (int arr = 0; arr < M; arr++)
         {
             printf("Max of array %d: %d\n", arr, max[arr]);
         }
-        printf("Total time: %f ms\n", (t8 - t7 + t6 - t5 + t4 - t3 + t2 - t1) * 1000);
+        printf("Time to generate the arrays: %f ms\n", (t2 - t1) * 1000);
+        printf("Time to get the max: %f ms\n", (t4 - t3) * 1000);
+        printf("Total time: %f ms\n", (t4 - t3 + t2 - t1) * 1000);
     } else {
-        // receive the work
-        int *recv_array = (int *)malloc(N * sizeof(int));
-        MPI_Recv(recv_array, N, MPI_INT, 0, rank - 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-        // do its part of the work
-        int recv_size = N / nb_proc;
-        int offset = rank * recv_size;
-        int max_value = max_array(recv_array, recv_size, offset);
-
-        // send the result
-        MPI_Send(&max_value, 1, MPI_INT, 0, rank - 1, MPI_COMM_WORLD);
-
-        free(recv_array);
+        /*
+        in this version, wait for all the arrays to arrive before starting to work.
+        */
+        for (int arr = rank - 1; arr < M; arr += nb_proc - 1)
+        {
+            array[arr] = (int *)malloc(N * sizeof(int));
+            MPI_Recv(array[arr], N, MPI_INT, 0, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            max[arr] = max_array(array[arr], N, 0);
+            MPI_Send(&max[arr], 1, MPI_INT, 0, arr, MPI_COMM_WORLD);
+            free(array[arr]);
+        }
     }
 
     MPI_Finalize();

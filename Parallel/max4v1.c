@@ -14,6 +14,12 @@ b) Work Decomposition on Multiple Arrays
 The first technique to parallelize the previous application is to simply apply the mechanism you developed during the previous question. Here, the parallelism will be exploited when looking for a max inside one array. This question simply consists in processing the arrays one by one and find the maximum value among the parallel MPI processes. Once again, we propose to rely on the MPI_Wtime function for measuring some parts of the code.
 
 Implement this mechanism inside a file named max3.c.
+c) Static Work Distribution
+We will now try another way to parallelize the search of max values inside multiple arrays. Of course, the previous approach is valid but there are some limits: everytime one array is processed, there is a synchronization between all the MPI processes. Another solution is to let one MPI task to process one array at a time. Here, the parallelism will be on the different arrays because, at the same time, two MPI processes will traverse different arrays without synchronization between them.
+
+We propose now to modify the code to implement this work distribution method. The process with rank 0 will be in charge of generating and filling the arrays, then it should send the elements to the different MPI tasks. Our first method (or scheduling policy) will be to distribute the arrays in a round-robin manner i.e., send the first array to MPI task 1, the second to task 2, and so on. This is called a static distribution because it is possible to determine, ahead of time, which array will be assigned to which task.
+
+Implement this mechanism inside a file named max4.c.
 */
 
 #include <stdio.h>
@@ -62,6 +68,27 @@ int max_array(int *array, int size, int offset)
     return max;
 }
 
+/*
+There are two versions of this file.
+
+v1 implements the static distribution of the work by the following steps:
+
+master distribute all arrays to their respective slave
+only then do the slave start to work
+master collect the results from the slaves
+
+v2 implements the dynamic distribution of the work by the following steps:
+
+master distribute arrays to the slaves cyclically. When a cycle is complete, the master waits for the results.
+upon receiving an array, the slave starts to work and sends the result back to the master.
+
+Hopefully, v2 is faster than v1, as there will be less idle time for the slaves.
+*/
+
+/*
+This is the v1 version.
+*/
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -86,12 +113,6 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
     
-    if (N % nb_proc != 0)
-    {
-        fprintf(stderr, "Number of elements must be divisible by the number of processes\n");
-        exit(1);
-    }
-
     if (rank==0)
     { 
         // generate the arrays
@@ -104,52 +125,30 @@ int main(int argc, char **argv)
         float t2 = MPI_Wtime();
 
         // distribute the work
-        // Note :
-        // I think this is not what the question wanted based on the comment on the next question.
-        // I should treat one array completely before moving to the next one.
-        // But here I do all the distribution of all the arrays, then all the computation, then all the collection.
-        // So in the end there is the same amount of synchronisation and messages but more in a burst manner, with a lot of
-        // time between the two burst during which the processes are going full BRRRRR on their own.
-
-        // I don't know if there is any actual difference in performance between the two methods.
-        // I implemented the difference between the two versions described here in max4v1.c and max4v2.c.
-        // See these files for more details.
         float t3 = MPI_Wtime();
-        for (int proc = 1; proc < nb_proc; proc++)
+        for (int arr = 0; arr < M; arr++)
         {
-            for (int arr = 0; arr < M; arr++)
-            {
-                MPI_Send(
-                    array[arr] + proc * N / nb_proc,
-                    N / nb_proc,
-                    MPI_INT, proc, arr, MPI_COMM_WORLD
-                );
-            }
+            MPI_Send(
+                array[arr],
+                N,
+                MPI_INT,
+                (arr % (nb_proc - 1)) + 1,
+                arr,
+                MPI_COMM_WORLD
+            );
         }
         float t4 = MPI_Wtime();
 
         // do its part of the work
-        float t5 = MPI_Wtime();
-        for (int arr = 0; arr < M; arr++)
-        {
-            max[arr] = max_array(array[arr], N / nb_proc, 0);
-            free(array[arr]);
-        }
-        float t6 = MPI_Wtime();
 
         // collect the results
         float t7 = MPI_Wtime();
-        for (int proc = 1; proc < nb_proc; proc++)
+        for (int arr = 0; arr < M; arr++)
         {
-            for (int arr = 0; arr < M; arr++)
-            {
-                int tmp;
-                MPI_Recv(&tmp, 1, MPI_INT, proc, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                if (tmp > max[arr])
-                {
-                    max[arr] = tmp;
-                }
-            }
+            int tmp;
+            MPI_Recv(&tmp, 1, MPI_INT, (arr % (nb_proc - 1)) + 1, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            max[arr] = tmp;
+            free(array[arr]);
         }
         float t8 = MPI_Wtime();
 
@@ -158,29 +157,32 @@ int main(int argc, char **argv)
         {
             printf("Max of array %d: %d\n", arr, max[arr]);
         }
-
-        printf("Time to distribute the arrays: %f ms\n", (t4 - t3) * 1000);
-        printf("Time to compute the max: %f ms\n", (t6 - t5) * 1000);
         printf("Time to generate the arrays: %f ms\n", (t2 - t1) * 1000);
-        printf("Time to get the max: %f ms\n", (t8 - t7 + t6 - t5 + t4 - t3) * 1000);
-        printf("Total time: %f ms\n", (t8 - t7 + t6 - t5 + t4 - t3 + t2 - t1) * 1000);
+        printf("Time to distribute the arrays: %f ms\n", (t4 - t3) * 1000);
+        printf("Time to get the max: %f ms\n", (t8 - t7 + t4 - t3) * 1000);
+        printf("Total time: %f ms\n", (t8 - t7 + t4 - t3 + t2 - t1) * 1000);
     } else {
-        // receive the work
-        for (int arr = 0; arr < M; arr++)
+        /*
+        in this version, wait for all the arrays to arrive before starting to work.
+        */
+        // receive the arrays
+        for (int arr = rank - 1; arr < M; arr += nb_proc - 1)
         {
-            array[arr] = (int *)malloc(N / nb_proc * sizeof(int));
-            MPI_Recv(array[arr], N / nb_proc, MPI_INT, 0, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            array[arr] = (int *)malloc(N * sizeof(int));
+            MPI_Recv(array[arr], N, MPI_INT, 0, arr, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         }
 
         // do its part of the work
-        for (int arr = 0; arr < M; arr++)
+        float t5 = MPI_Wtime();
+        for (int arr = rank - 1; arr < M; arr += nb_proc - 1)
         {
-            max[arr] = max_array(array[arr], N / nb_proc, 0);
+            max[arr] = max_array(array[arr], N, 0);
             free(array[arr]);
         }
+        float t6 = MPI_Wtime();
 
-        // send the result
-        for (int arr = 0; arr < M; arr++)
+        // send the results
+        for (int arr = rank - 1; arr < M; arr += nb_proc - 1)
         {
             MPI_Send(&max[arr], 1, MPI_INT, 0, arr, MPI_COMM_WORLD);
         }

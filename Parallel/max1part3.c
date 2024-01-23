@@ -94,7 +94,6 @@ int main(int argc, char **argv)
         array[i] = generate_array(-1, N);
     }
     float t1 = MPI_Wtime();
-    printf("Time to generate arrays: %f ms\n", (t1 - t0) * 1000);
     
     for (int i = 0; i < M; i++)
     {
@@ -105,6 +104,7 @@ int main(int argc, char **argv)
     }
     
     float t2 = MPI_Wtime();
+    printf("Time to generate arrays: %f ms\n", (t1 - t0) * 1000);
     printf("Time to compute max: %f ms\n", (t2 - t1) * 1000);
     MPI_Finalize();
     return 0;
